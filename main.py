@@ -165,4 +165,5 @@ if __name__ == "__main__":
     # Bind SSE request handling to MCP server
     starlette_app = create_starlette_app(mcp_server, debug=True)
 
-    uvicorn.run(starlette_app, host=args.host, port=args.port)
+    uvicorn.run(starlette_app, host=args.host, port=args.port,
+                timeout_keep_alive=1800, ws_ping_interval=120, ws_ping_timeout=120)  # Set timeout to 120 seconds
