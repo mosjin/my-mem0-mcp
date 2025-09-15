@@ -7,6 +7,7 @@ from mcp.server import Server
 import uvicorn
 from mem0 import MemoryClient
 from enhanced_mem0_client import EnhancedMemoryClient
+from typing import Union
 from mem0_config import get_config, get_logging_config, get_server_config
 from dotenv import load_dotenv
 import json
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP("mem0-mcp")
 
 # Initialize enhanced mem0 client and set default user
+mem0_client: Union[EnhancedMemoryClient, MemoryClient]
 try:
     mem0_client = EnhancedMemoryClient(config=config)
     logger.info("使用增强版Mem0客户端")
@@ -227,6 +229,6 @@ if __name__ == "__main__":
         logger.info("收到中断信号，正在关闭服务...")
     finally:
         # 确保客户端正确关闭
-        if hasattr(mem0_client, 'close'):
+        if isinstance(mem0_client, EnhancedMemoryClient):
             mem0_client.close()
         logger.info("服务已关闭")
