@@ -35,6 +35,14 @@ DEFAULT_CONFIG = {
         "chunk_delay": 0.1,              # 块间延迟（秒）
     },
     
+    # 连接管理设置
+    "connection": {
+        "health_check_interval": 30,      # 健康检查间隔（秒）
+        "heartbeat_interval": 60,         # 心跳间隔（秒）
+        "auto_rebuild": True,             # 自动重建连接
+        "connection_timeout": 10,         # 连接超时（秒）
+    },
+    
     # 服务器设置
     "server": {
         "host": "0.0.0.0",
@@ -118,6 +126,10 @@ def get_retry_config(config: Dict[str, Any]) -> Dict[str, Any]:
 def get_data_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """获取数据处理配置"""
     return config["data"]
+
+def get_connection_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """获取连接管理配置"""
+    return config["connection"]
 
 def get_server_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """获取服务器配置"""

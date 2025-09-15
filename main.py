@@ -213,12 +213,20 @@ if __name__ == "__main__":
     # Bind SSE request handling to MCP server
     starlette_app = create_starlette_app(mcp_server, debug=True)
 
-    uvicorn.run(
-        starlette_app, 
-        host=args.host, 
-        port=args.port,
-        timeout_keep_alive=server_config['timeout_keep_alive'],
-        ws_ping_interval=server_config['ws_ping_interval'],
-        ws_ping_timeout=server_config['ws_ping_timeout'],
-        log_level=logging_config['level'].lower()
-    )
+    try:
+        uvicorn.run(
+            starlette_app, 
+            host=args.host, 
+            port=args.port,
+            timeout_keep_alive=server_config['timeout_keep_alive'],
+            ws_ping_interval=server_config['ws_ping_interval'],
+            ws_ping_timeout=server_config['ws_ping_timeout'],
+            log_level=logging_config['level'].lower()
+        )
+    except KeyboardInterrupt:
+        logger.info("收到中断信号，正在关闭服务...")
+    finally:
+        # 确保客户端正确关闭
+        if hasattr(mem0_client, 'close'):
+            mem0_client.close()
+        logger.info("服务已关闭")

@@ -5,12 +5,15 @@ import os
 import json
 import logging
 import time
+import asyncio
+import threading
 from typing import Any, Dict, List, Optional, Union
 from functools import wraps
+from datetime import datetime, timedelta
 
 import httpx
 from mem0.client.main import MemoryClient, APIError
-from mem0_config import get_config, get_httpx_timeout_config, get_httpx_limits_config, get_retry_config, get_data_config
+from mem0_config import get_config, get_httpx_timeout_config, get_httpx_limits_config, get_retry_config, get_data_config, get_connection_config
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,7 @@ class EnhancedMemoryClient(MemoryClient):
         limits_config = get_httpx_limits_config(self.config)
         retry_config = get_retry_config(self.config)
         data_config = get_data_config(self.config)
+        connection_config = get_connection_config(self.config)
         
         # 设置实例变量
         self.api_key = api_key or os.getenv("MEM0_API_KEY")
@@ -55,10 +59,30 @@ class EnhancedMemoryClient(MemoryClient):
         self.max_chunk_size = data_config["max_chunk_size"]
         self.chunk_delay = data_config["chunk_delay"]
         
+        # 连接管理相关属性
+        self._connection_healthy = True
+        self._last_health_check = datetime.now()
+        self._health_check_interval = connection_config["health_check_interval"]
+        self._heartbeat_interval = connection_config["heartbeat_interval"]
+        self._auto_rebuild = connection_config["auto_rebuild"]
+        self._connection_timeout = connection_config["connection_timeout"]
+        self._heartbeat_thread = None
+        self._heartbeat_stop_event = threading.Event()
+        
         if not self.api_key:
             raise ValueError("Mem0 API Key not provided. Please provide an API Key.")
         
         # 创建增强的httpx客户端配置
+        self._create_client(timeout_config, limits_config)
+        
+        # 验证API密钥
+        self.user_email = self._validate_api_key()
+        
+        # 启动心跳保活机制
+        self._start_heartbeat()
+    
+    def _create_client(self, timeout_config, limits_config):
+        """创建httpx客户端"""
         self.client = httpx.Client(
             base_url=self.host,
             headers={
@@ -72,19 +96,113 @@ class EnhancedMemoryClient(MemoryClient):
             follow_redirects=True,
             max_redirects=10,
         )
+        logger.info("HTTP客户端已创建")
+    
+    def _check_connection_health(self) -> bool:
+        """检查连接健康状态"""
+        try:
+            # 发送一个简单的ping请求检查连接
+            response = self.client.get("/v1/ping/", timeout=self._connection_timeout)
+            if response.status_code == 200:
+                self._connection_healthy = True
+                self._last_health_check = datetime.now()
+                logger.debug("连接健康检查通过")
+                return True
+            else:
+                logger.warning(f"连接健康检查失败，状态码: {response.status_code}")
+                self._connection_healthy = False
+                return False
+        except Exception as e:
+            logger.warning(f"连接健康检查异常: {e}")
+            self._connection_healthy = False
+            return False
+    
+    def _rebuild_connection(self):
+        """重建连接"""
+        try:
+            logger.info("开始重建连接...")
+            # 关闭旧连接
+            if hasattr(self, 'client') and self.client:
+                self.client.close()
+            
+            # 重新创建客户端
+            timeout_config = get_httpx_timeout_config(self.config)
+            limits_config = get_httpx_limits_config(self.config)
+            self._create_client(timeout_config, limits_config)
+            
+            # 重新验证API密钥
+            self.user_email = self._validate_api_key()
+            
+            self._connection_healthy = True
+            self._last_health_check = datetime.now()
+            logger.info("连接重建成功")
+            
+        except Exception as e:
+            logger.error(f"连接重建失败: {e}")
+            self._connection_healthy = False
+    
+    def _start_heartbeat(self):
+        """启动心跳保活机制"""
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive():
+            return
         
-        # 验证API密钥
-        self.user_email = self._validate_api_key()
+        def heartbeat_worker():
+            while not self._heartbeat_stop_event.is_set():
+                try:
+                    # 检查是否需要健康检查
+                    if (datetime.now() - self._last_health_check).seconds >= self._health_check_interval:
+                        if not self._check_connection_health():
+                            logger.warning("连接不健康，尝试重建...")
+                            self._rebuild_connection()
+                    
+                    # 等待心跳间隔
+                    self._heartbeat_stop_event.wait(self._heartbeat_interval)
+                    
+                except Exception as e:
+                    logger.error(f"心跳保活机制异常: {e}")
+                    time.sleep(5)  # 异常时等待5秒再继续
+        
+        self._heartbeat_thread = threading.Thread(target=heartbeat_worker, daemon=True)
+        self._heartbeat_thread.start()
+        logger.info("心跳保活机制已启动")
+    
+    def _stop_heartbeat(self):
+        """停止心跳保活机制"""
+        if self._heartbeat_thread:
+            self._heartbeat_stop_event.set()
+            self._heartbeat_thread.join(timeout=5)
+            logger.info("心跳保活机制已停止")
+    
+    def _ensure_healthy_connection(self):
+        """确保连接健康"""
+        # 如果连接不健康或长时间未检查，进行健康检查
+        if (not self._connection_healthy or 
+            (datetime.now() - self._last_health_check).seconds >= self._health_check_interval):
+            
+            if not self._check_connection_health():
+                logger.warning("连接不健康，尝试重建...")
+                self._rebuild_connection()
     
     def _retry_on_failure(self, func, *args, **kwargs):
-        """重试机制装饰器"""
+        """重试机制装饰器，集成连接健康检查"""
+        # 确保连接健康
+        self._ensure_healthy_connection()
+        
         for attempt in range(self.max_retries):
             try:
                 return func(*args, **kwargs)
-            except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, ConnectionResetError) as e:
                 if attempt == self.max_retries - 1:
                     logger.error(f"所有重试失败: {e}")
                     raise APIError(f"请求失败，已重试{self.max_retries}次: {str(e)}")
+                
+                # 检测到连接错误时，尝试重建连接
+                if isinstance(e, (httpx.ConnectError, ConnectionResetError)) and self._auto_rebuild:
+                    logger.warning(f"检测到连接错误，尝试重建连接: {e}")
+                    try:
+                        self._rebuild_connection()
+                    except Exception as rebuild_error:
+                        logger.error(f"连接重建失败: {rebuild_error}")
                 
                 wait_time = self.retry_delay * (self.backoff_factor ** attempt)  # 指数退避
                 logger.warning(f"请求失败，{wait_time}秒后重试 (尝试 {attempt + 1}/{self.max_retries}): {e}")
@@ -105,6 +223,10 @@ class EnhancedMemoryClient(MemoryClient):
         # 确保max_chunk_size不为None
         if max_chunk_size is None:
             max_chunk_size = self.max_chunk_size
+        
+        # 再次确保不为None
+        if max_chunk_size is None:
+            max_chunk_size = 2 * 1024 * 1024  # 默认2MB
         
         # 如果数据小于块大小，直接返回
         if len(data.encode('utf-8')) <= max_chunk_size:
@@ -266,8 +388,21 @@ class EnhancedMemoryClient(MemoryClient):
     
     def close(self):
         """关闭客户端连接"""
-        if hasattr(self, 'client'):
-            self.client.close()
+        try:
+            # 停止心跳保活机制
+            self._stop_heartbeat()
+            
+            # 关闭HTTP客户端
+            if hasattr(self, 'client') and self.client:
+                self.client.close()
+                logger.info("HTTP客户端已关闭")
+            
+            # 重置连接状态
+            self._connection_healthy = False
+            logger.info("客户端连接已完全关闭")
+            
+        except Exception as e:
+            logger.error(f"关闭客户端时出现异常: {e}")
     
     def __enter__(self):
         return self

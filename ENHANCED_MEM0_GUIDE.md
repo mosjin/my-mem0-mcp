@@ -22,6 +22,12 @@
 - **环境变量支持**: 可通过环境变量覆盖配置
 - **日志记录**: 详细的日志记录，便于调试
 
+### 4. 连接管理
+- **连接健康检查**: 定期检查连接状态
+- **自动连接重建**: 检测到连接问题时自动重建
+- **心跳保活机制**: 维持连接活跃状态
+- **智能重试策略**: 集成连接管理的重试机制
+
 ## 文件结构
 
 ```
@@ -29,7 +35,10 @@
 ├── enhanced_mem0_client.py    # 增强版客户端
 ├── mem0_config.py            # 配置文件
 ├── start_mem0_mcp.bash       # 启动脚本
-└── ENHANCED_MEM0_GUIDE.md    # 使用指南
+├── ENHANCED_MEM0_GUIDE.md    # 使用指南
+├── CONNECTION_MANAGEMENT.md   # 连接管理说明
+├── TIMEOUT_CONFIGURATION.md  # 超时配置说明
+└── RETRY_CONFIGURATION.md    # 重试配置说明
 ```
 
 ## 配置说明
